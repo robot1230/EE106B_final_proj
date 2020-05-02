@@ -7,13 +7,14 @@ import argparse
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--num_robots', '-nr', type=int, default=3)
+parser.add_argument('--N', '-N', type=int, default=0)
 args = parser.parse_args()
 
 NUM_ROBOTS = args.num_robots
-COM_RANGE = 50#R
-GRID_LENGTH = 5#l (not exactly l but corresponds to l)
+COM_RANGE = 60#R
+GRID_LENGTH = 25#l (not exactly l but corresponds to l)
 ROBOT_RAD = GRID_LENGTH*2#r (here it is slightly different from r since plt scaling is weird)
-TRANSMIT_FREQ = 10#f_comm
+TRANSMIT_FREQ = 100#f_comm
 # SPEED = 0.1 #blocks/sec
 GRID_SIZE = 100
 # LISTENING_TIME = 100/TRANSMIT_FREQ
@@ -64,7 +65,7 @@ class Robot():
         self.nextwp = self.wp
         self.id = id
         self.hop = np.inf
-        self.delta_t = 2/TRANSMIT_FREQ
+        self.delta_t = 50/TRANSMIT_FREQ
         self.qu = Q[np.random.randint(len(Q))]
         # if self.id == 2:
         #     self.T = Q[1]
@@ -97,24 +98,28 @@ class Robot():
             wait_flag = 0
             for i in surroundings:
                 if manhattan(self.T, i) < manhattan(self.T, self.wp):
+                    msg_locks[self.id].acquire()
                     self.nextwp = i
+                    msg_locks[self.id].release()
                     break
 
             rcvmsgs = []
             started_listening = time.time()
-            while len(rcvmsgs) == 0 and time.time()-started_listening <= self.delta_t:
+            while len(rcvmsgs) == 0 or time.time()-started_listening <= self.delta_t:
                 rcvmsgs = []
                 request_time = time.time()
                 for r in robots:
                     if r.id != self.id and norm(r.p, self.p) <= COM_RANGE:
                         msg_locks[r.id].acquire()
-                        rcvmsgs.append(r.msg)
+                        rcvmsgs.append(r.msg.copy())
                         msg_locks[r.id].release()
 
             if len(rcvmsgs) > 0:
                 msg_min = min(rcvmsgs, key=lambda x: x[-1])
+                msg_locks[self.id].acquire()
                 self.hop = 1 + msg_min[-1]
                 self.qu = msg_min[-2]
+                msg_locks[self.id].release()
                 for i in surroundings:
                     if i in Q:
                         occupied = 0
@@ -123,8 +128,10 @@ class Robot():
                                 occupied = 1
                                 break
                         if occupied == 0:
+                            msg_locks[self.id].acquire()
                             self.qu = i
                             self.hop = 0
+                            msg_locks[self.id].release()
                             break
                 # if self.id == 0:
                 #     print(msg_min)
@@ -161,9 +168,10 @@ class Robot():
     def broadcast(self, lock):
         while True:
             # print("BROADCAST", self.id)
-            lock.acquire()
+            # lock.acquire()
             self.msg = [time.time(), self.p, self.wp, self.nextwp, self.T, self.qu, self.hop]
-            lock.release()
+            # lock.release()
+            # print(self.id, [int(self.wp[0]/GRID_LENGTH - 0.5), int(self.wp[1]/GRID_LENGTH - 0.5)], [int(self.T[0]/GRID_LENGTH - 0.5), int(self.T[1]/GRID_LENGTH - 0.5)], self.requests)
             time.sleep(1/TRANSMIT_FREQ)
 
     def goal_manager(self):
@@ -171,7 +179,7 @@ class Robot():
         def two_way_handshake(r_msg, self_p, self_T):
             #2-way handshake
             rx, ry = r_msg[1]
-            waiting_time = 0.1
+            waiting_time = 0.3
             successful = False
             new_goal = None
             x, y = self_p
@@ -244,24 +252,32 @@ class Robot():
                             # msg_locks[self.id].acquire()
                             # print('acquired', self.id)
                             if np.random.random() > 0.1:
+                                # msg_locks[self.id].acquire()
                                 self.T = qu
+                                # msg_locks[self.id].release()
                                 self.last_check = time.time()
                             else:
+                                # msg_locks[self.id].acquire()
                                 self.T = Q[np.random.randint(len(Q))]
+                                # msg_locks[self.id].release()
                                 self.last_check = time.time()
                             # msg_locks[self.id].release()
 
-                    if norm(r_msg[4], wp) + norm(r_msg[2], T) < norm(T, wp) + norm(r_msg[4], r_msg[2]):
+                    if manhattan(r_msg[4], wp) + manhattan(r_msg[2], T) < manhattan(T, wp) + manhattan(r_msg[4], r_msg[2]):
                         successful, new_goal = two_way_handshake(r_msg, p, T)
 
                         if successful:
+                            # msg_locks[self.id].acquire()
                             self.T = new_goal
+                            # msg_locks[self.id].release()
                             self.last_check = time.time()
-                    if norm(r_msg[4], wp) + norm(r_msg[2], T) == norm(T, wp) + norm(r_msg[4], r_msg[2]):
-                        if np.random.random() < 0.3:
+                    if manhattan(r_msg[4], wp) + manhattan(r_msg[2], T) == manhattan(T, wp) + manhattan(r_msg[4], r_msg[2]):
+                        if np.random.random() < 0.6:
                             successful, new_goal = two_way_handshake(r_msg, p, T)
                             if successful:
+                                # msg_locks[self.id].acquire()
                                 self.T = new_goal
+                                # msg_locks[self.id].release()
                                 self.last_check = time.time()
                     # msg_locks[r.id].release()
             # if self.id == 2:
@@ -308,7 +324,7 @@ class Draw():
 
 
 def main():
-    global robots
+    global robots, Q
     fig = plt.figure()
     #converting from index to coordinates
     for i in range(NUM_ROBOTS):
@@ -316,6 +332,8 @@ def main():
         while target in Q:
             target = [np.random.randint(GRID_SIZE//GRID_LENGTH), np.random.randint(GRID_SIZE//GRID_LENGTH)]
         Q.append(target)
+    if args.N == 1:
+        Q = [[0,0],[0,1],[0,2],[0,3],[1,2],[2,1],[3,0],[3,1],[3,2],[3,3]]
     # Q.append([0,3])
     # Q.append([10,1])
     # Q.append([3,5])
@@ -331,7 +349,7 @@ def main():
         init_pos = [np.random.randint(GRID_SIZE//GRID_LENGTH), np.random.randint(GRID_SIZE//GRID_LENGTH)]
         while init_pos in rob_init_pos:
             init_pos = [np.random.randint(GRID_SIZE//GRID_LENGTH), np.random.randint(GRID_SIZE//GRID_LENGTH)]
-        robots.append(Robot(id, init_pos[0], init_pos[1]))
+        robots.append(Robot(init_pos[0], init_pos[1], id))
         rob_init_pos.append(init_pos)
         id+=1
     # r = Robot(0, 0, 0)  #blue - id:0
