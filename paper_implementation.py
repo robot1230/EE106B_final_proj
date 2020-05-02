@@ -3,7 +3,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 import time
+import argparse
 
+parser = argparse.ArgumentParser()
+parser.add_argument('--num_robots', '-nr', type=int, default=3)
+args = parser.parse_args()
+
+NUM_ROBOTS = args.num_robots
 COM_RANGE = 50#R
 GRID_LENGTH = 5#l (not exactly l but corresponds to l)
 ROBOT_RAD = GRID_LENGTH*2#r (here it is slightly different from r since plt scaling is weird)
@@ -305,18 +311,34 @@ def main():
     global robots
     fig = plt.figure()
     #converting from index to coordinates
-    Q.append([0,3])
-    Q.append([10,1])
-    Q.append([3,5])
+    for i in range(NUM_ROBOTS):
+        target = [np.random.randint(GRID_SIZE//GRID_LENGTH), np.random.randint(GRID_SIZE//GRID_LENGTH)]
+        while target in Q:
+            target = [np.random.randint(GRID_SIZE//GRID_LENGTH), np.random.randint(GRID_SIZE//GRID_LENGTH)]
+        Q.append(target)
+    # Q.append([0,3])
+    # Q.append([10,1])
+    # Q.append([3,5])
+    print(Q)
     for i in range(len(Q)):
         for j in range(len(Q[0])):
             Q[i][j] = GRID_LENGTH*(Q[i][j]+0.5)
 
-    r = Robot(0, 0, 0)  #blue - id:0
-    r1 = Robot(1, 0, 1) #red - id:1
-    r2 = Robot(0, 1, 2) #green - id:2
+    rob_init_pos = []
+    robots = []
+    id = 0
+    for i in range(NUM_ROBOTS):
+        init_pos = [np.random.randint(GRID_SIZE//GRID_LENGTH), np.random.randint(GRID_SIZE//GRID_LENGTH)]
+        while init_pos in rob_init_pos:
+            init_pos = [np.random.randint(GRID_SIZE//GRID_LENGTH), np.random.randint(GRID_SIZE//GRID_LENGTH)]
+        robots.append(Robot(id, init_pos[0], init_pos[1]))
+        rob_init_pos.append(init_pos)
+        id+=1
+    # r = Robot(0, 0, 0)  #blue - id:0
+    # r1 = Robot(1, 0, 1) #red - id:1
+    # r2 = Robot(0, 1, 2) #green - id:2
     # r1 = Robot(10, 80, 1)
-    robots = [r, r1, r2]
+    # robots = [r, r1, r2]
     for r in robots:
         msg_locks[r.id] = threading.Lock()
         ack_locks[r.id] = threading.Lock()
