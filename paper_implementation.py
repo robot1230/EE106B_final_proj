@@ -7,10 +7,9 @@ import argparse
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--num_robots', '-nr', type=int, default=3)
-parser.add_argument('--N', '-N', type=int, default=0)
+parser.add_argument('--shape', '-sh', type=str, default='any')
 args = parser.parse_args()
 
-NUM_ROBOTS = args.num_robots
 COM_RANGE = 60#R
 GRID_LENGTH = 25#l (not exactly l but corresponds to l)
 ROBOT_RAD = GRID_LENGTH*2#r (here it is slightly different from r since plt scaling is weird)
@@ -19,6 +18,10 @@ TRANSMIT_FREQ = 100#f_comm
 GRID_SIZE = 100
 # LISTENING_TIME = 100/TRANSMIT_FREQ
 dt = 1/200000
+if args.shape == 'n' or 'u':
+    NUM_ROBOTS = 2*(GRID_SIZE//GRID_LENGTH) + (GRID_SIZE//GRID_LENGTH)-2
+else:
+    NUM_ROBOTS = args.num_robots
 Q = []
 robots = []
 msg_locks = {}
@@ -332,8 +335,16 @@ def main():
         while target in Q:
             target = [np.random.randint(GRID_SIZE//GRID_LENGTH), np.random.randint(GRID_SIZE//GRID_LENGTH)]
         Q.append(target)
-    if args.N == 1:
-        Q = [[0,0],[0,1],[0,2],[0,3],[1,2],[2,1],[3,0],[3,1],[3,2],[3,3]]
+    if args.shape == 'n':
+        Q = []
+        Q.extend([[0, i] for i in range(GRID_SIZE//GRID_LENGTH)])
+        Q.extend([[i+1, GRID_SIZE//GRID_LENGTH - 2 - i] for i in range(GRID_SIZE//GRID_LENGTH - 2)])
+        Q.extend([[GRID_SIZE//GRID_LENGTH - 1, i] for i in range(GRID_SIZE//GRID_LENGTH)])
+    elif args.shape == 'u':
+        Q = []
+        Q.extend([[0, i] for i in range(GRID_SIZE//GRID_LENGTH)])
+        Q.extend([[i+1, 0] for i in range(GRID_SIZE//GRID_LENGTH - 2)])
+        Q.extend([[GRID_SIZE//GRID_LENGTH - 1, i] for i in range(GRID_SIZE//GRID_LENGTH)])
     # Q.append([0,3])
     # Q.append([10,1])
     # Q.append([3,5])
