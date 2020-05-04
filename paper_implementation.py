@@ -18,7 +18,7 @@ TRANSMIT_FREQ = 100#f_comm
 GRID_SIZE = 100
 # LISTENING_TIME = 100/TRANSMIT_FREQ
 dt = 1/200000
-if args.shape == 'n' or 'u':
+if args.shape == 'n' or args.shape == 'u':
     NUM_ROBOTS = 2*(GRID_SIZE//GRID_LENGTH) + (GRID_SIZE//GRID_LENGTH)-2
 else:
     NUM_ROBOTS = args.num_robots
@@ -63,6 +63,7 @@ class Robot():
     def __init__(self, x, y, id):
         self.x = GRID_LENGTH*(x + 0.5)
         self.y = GRID_LENGTH*(y + 0.5)
+        self.angle = np.random.randint(4)*90
         self.p = [self.x, self.y]
         self.wp = self.p
         self.nextwp = self.wp
@@ -89,26 +90,30 @@ class Robot():
         t2.start()
 
         while True:
-            surroundings = [[self.wp[0] - GRID_LENGTH, self.wp[1]], [self.wp[0], self.wp[1] - GRID_LENGTH],
-                [self.wp[0] + GRID_LENGTH, self.wp[1]], [self.wp[0], self.wp[1] + GRID_LENGTH]]
+            surroundings = [[self.wp[0], self.wp[1] + GRID_LENGTH], [self.wp[0] - GRID_LENGTH, self.wp[1]],
+                [self.wp[0], self.wp[1] - GRID_LENGTH], [self.wp[0] + GRID_LENGTH, self.wp[1]]]
+            idxs = [0,1,2,3]
 
             #boundary checks
             for i in range(len(surroundings)-1, -1, -1):
                 x, y = surroundings[i][0], surroundings[i][1]
                 if x < 0 or y < 0 or x > GRID_SIZE or y > GRID_SIZE:
                     surroundings.pop(i)
+                    idxs.pop(i)
 
             wait_flag = 0
-            for i in surroundings:
-                if manhattan(self.T, i) < manhattan(self.T, self.wp):
+            next_angle = self.angle
+            for i in range(len(surroundings)):
+                if manhattan(self.T, surroundings[i]) < manhattan(self.T, self.wp):
                     msg_locks[self.id].acquire()
-                    self.nextwp = i
+                    self.nextwp = surroundings[i]
                     msg_locks[self.id].release()
+                    next_angle = idxs[i]*90
                     break
 
             rcvmsgs = []
             started_listening = time.time()
-            while len(rcvmsgs) == 0 or time.time()-started_listening <= self.delta_t:
+            while time.time()-started_listening <= self.delta_t:
                 rcvmsgs = []
                 request_time = time.time()
                 for r in robots:
@@ -144,7 +149,7 @@ class Robot():
                         # if self.id == 0:
                             # print(msg[2])
                         wait_flag = 1
-                    if msg[3] == self.nextwp:
+                    if msg[3][0] == self.nextwp[0] and msg[3][1] == self.nextwp[1]:
                         ix, iy = msg[1]
                         if ix > self.x or (ix == self.x and iy > self.y):
                             wait_flag = 1
@@ -157,6 +162,16 @@ class Robot():
                 self.wp = self.nextwp
                 start_moving = time.time()
                 ox, oy = self.x, self.y
+                oang = self.angle
+                dir = 1 if next_angle - self.angle <= 180 else -1
+                # print('yea')
+                # print(self.angle, next_angle, self.p, self.id)
+                # self.angle = next_angle
+
+                while abs(self.angle%360 - next_angle) >= 0.1:
+                    self.angle += dt*dir*30
+                self.angle = next_angle
+
                 while norm(self.p, self.wp) >= 0.1:
                     self.x += dt*(self.wp[0] - ox)
                     self.y += dt*(self.wp[1] - oy)
@@ -275,7 +290,7 @@ class Robot():
                             # msg_locks[self.id].release()
                             self.last_check = time.time()
                     if manhattan(r_msg[4], wp) + manhattan(r_msg[2], T) == manhattan(T, wp) + manhattan(r_msg[4], r_msg[2]):
-                        if np.random.random() < 0.6:
+                        if np.random.random() < 0.5:
                             successful, new_goal = two_way_handshake(r_msg, p, T)
                             if successful:
                                 # msg_locks[self.id].acquire()
@@ -305,7 +320,7 @@ class Draw():
         self.plot = {}
         colors = ['blue', 'red', 'green', 'black', 'brown']
         for i in range(len(robots)):
-            self.plot[robots[i]], = plt.plot([], [], marker='o', markersize=ROBOT_RAD, c=colors[i%len(colors)])
+            self.plot[robots[i]], = plt.plot([], [], marker=(3, 0, robots[i].angle), markersize=ROBOT_RAD, c=colors[i%len(colors)])
 
         self.ani = FuncAnimation(self.fig, self.update, frames=600, fargs=(robots), interval=10,
                     init_func=self.init_func, blit=True)
@@ -323,6 +338,7 @@ class Draw():
         for r in robots:
             x, y = r.p
             self.plot[r].set_data(x, y)
+            self.plot[r].set_marker((3, 0, r.angle))
         return self.plot.values()
 
 
@@ -330,6 +346,7 @@ def main():
     global robots, Q
     fig = plt.figure()
     #converting from index to coordinates
+    # print(NUM_ROBOTS)
     for i in range(NUM_ROBOTS):
         target = [np.random.randint(GRID_SIZE//GRID_LENGTH), np.random.randint(GRID_SIZE//GRID_LENGTH)]
         while target in Q:
