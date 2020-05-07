@@ -14,7 +14,7 @@ parser.add_argument('--shape', '-sh', type=str, default='any')
 args = parser.parse_args()
 
 GRID_SIZE = 100
-GRID_LENGTH = 20#l (not exactly l but corresponds to l)
+GRID_LENGTH = 25#l (not exactly l but corresponds to l)
 ROBOT_RAD = GRID_LENGTH/(3*np.sqrt(2))#r
 SAFETY_BUFFER = ROBOT_RAD*0.1
 COM_RANGE = GRID_LENGTH*2.5*2#R
@@ -23,7 +23,8 @@ TRANSMIT_FREQ = 200#f_comm
 # SPEED = 0.1 #blocks/sec
 # LISTENING_TIME = 100/TRANSMIT_FREQ
 dt = 1/200000
-STEP_SIZE = 5
+STEP_SIZE = 10
+done = False
 
 if args.shape == 'n' or args.shape == 'u':
     NUM_ROBOTS = 2*(GRID_SIZE//GRID_LENGTH) + (GRID_SIZE//GRID_LENGTH)-2
@@ -43,9 +44,14 @@ def norm(a, b):
     return ((a[0]-b[0])**2 + (a[1]-b[1])**2)**0.5
 
 def check_col(a, b1, b2):
-    roba = Point(a[0], a[1]).buffer(ROBOT_RAD + SAFETY_BUFFER)
-    robb = LineString([(b1[0], b1[1]), (b2[0], b2[1])]).buffer(ROBOT_RAD + SAFETY_BUFFER)
-    return roba.intersects(robb)
+    #assume small STEP_SIZE
+    if norm(a, b1) <= 2*ROBOT_RAD + SAFETY_BUFFER or norm(a, b2) <= 2*ROBOT_RAD + SAFETY_BUFFER:
+        return True
+    else:
+        return False
+    # roba = Point(a[0], a[1]).buffer(ROBOT_RAD + SAFETY_BUFFER)
+    # robb = LineString([(b1[0], b1[1]), (b2[0], b2[1])]).buffer(ROBOT_RAD + SAFETY_BUFFER)
+    # return roba.intersects(robb)
     # print(p1.intersects(p2))
 
 
@@ -69,6 +75,7 @@ class Robot():
         self.requests = []
 
     def main_rob(self):
+        global done
         time.sleep(1)
         t1 = threading.Thread(target=self.broadcast)
         t2 = threading.Thread(target=self.goal_manager)
@@ -76,14 +83,19 @@ class Robot():
         t1.start()
         t2.start()
 
-        while time.time()-self.start <= run_dur:
+        # while time.time()-self.start <= run_dur:
+        while not done:
+            # self.hop < NUM_ROBOTS or self.hop == np.inf
+            print(self.hop)
+            # print(time.time()-self.start)
+            # a = time.time()
             # if self.id ==1:
             #     print('------------------------------')
             #     print(self.id, self.wp, self.T)
             # surroundings = [[self.wp[0], self.wp[1] + GRID_LENGTH], [self.wp[0] - GRID_LENGTH, self.wp[1]],
             #     [self.wp[0], self.wp[1] - GRID_LENGTH], [self.wp[0] + GRID_LENGTH, self.wp[1]]]
 
-            thetas = np.arange(0,2*np.pi,np.pi/16).tolist()
+            thetas = np.arange(0,2*np.pi,np.pi/8).tolist()
 
             # idxs = [0,1,2,3]
 
@@ -146,21 +158,29 @@ class Robot():
                             self.qu = state
                             self.hop = 0
                             break
+
+                # print(time.time()-a)
+                # print("OKKKKK111")
                 for msg in rcvmsgs:
+                    # s = time.time()
                     collision = check_col(msg[2], self.wp, self.nextwp)
                     same_next_collision = check_col(msg[3], self.wp, self.nextwp)
+                    # print(time.time()-s)
                     # if msg[2][0] == self.nextwp[0] and msg[2][1] == self.nextwp[1]:
                     if collision:
-                        print("FIRST CASE")
-                        print(self.id, self.wp, self.nextwp, self.T)
+                        # print("FIRST CASE")
+                        # print(self.id, self.wp, self.nextwp, self.T)
                         wait_flag = 1
                     # if msg[3][0] == self.nextwp[0] and msg[3][1] == self.nextwp[1]:
                     if same_next_collision:
                         ix, iy = msg[1]
                         if ix > self.x or (ix == self.x and iy > self.y):
-                            print("SECOND CASE")
-                            print(self.id, self.wp, self.nextwp, self.T)
+                            # print("SECOND CASE")
+                            # print(self.id, self.wp, self.nextwp, self.T)
                             wait_flag = 1
+
+            # print(time.time()-a)
+            # print("OKKKKK")
             # if self.id == 1 and self.wp != self.nextwp and wait_flag == 1:
             #     print(self.id, self.wp, self.nextwp)
             if wait_flag == 0 and time.time() - self.last_check > self.delta_t:
@@ -177,6 +197,9 @@ class Robot():
                 # dir = 1 if next_angle - self.angle <= 180 else -1
 
                 while norm(self.p, self.wp) >= 0.1:
+                    # if self.id == 0:
+                    #     print(norm(self.p, [ox + STEP_SIZE*dirx, oy + STEP_SIZE*diry]))
+                    # print("yoooooo")
                     self.x += dt*(self.wp[0] - ox)
                     self.y += dt*(self.wp[1] - oy)
                     self.p = [self.x, self.y]
@@ -184,12 +207,14 @@ class Robot():
                 self.x, self.y = self.p
                 self.last_check = time.time()
 
+        print('out here')
         t1.join()
         t2.join()
         return False
 
     def broadcast(self):
-        while time.time()-self.start <= run_dur:
+        # while time.time()-self.start <= run_dur:
+        while not done:
             self.msg = [time.time(), self.p, self.wp, self.nextwp, self.T, self.qu, self.hop]
             time.sleep(1/TRANSMIT_FREQ)
 
@@ -198,7 +223,7 @@ class Robot():
         def two_way_handshake(r_msg, self_p, self_T):
             #2-way handshake
             rx, ry = r_msg[1]
-            waiting_time = 0.3
+            waiting_time = 0.6
             successful = False
             new_goal = None
             x, y = self_p
@@ -234,7 +259,8 @@ class Robot():
                     request_locks[self.id].release()
             return successful, new_goal
 
-        while time.time()-self.start <= run_dur:
+        # while time.time()-self.start <= run_dur:
+        while not done:
             s = time.time()
             for r in robots:
                 if norm(r.p, self.p) <= COM_RANGE:
@@ -298,9 +324,9 @@ class Draw():
         self.robs = {}
         colors = ['blue', 'red', 'green', 'black', 'brown']
         for i in range(NUM_ROBOTS):
-            self.robs[i] = plt.Circle((), radius=ROBOT_RAD, color=colors[i%len(colors)])
+            self.robs[i] = plt.Circle((), radius=ROBOT_RAD, color=colors[i%len(colors)], fill=False)
 
-        self.ani = FuncAnimation(self.fig, self.update, frames=self.data.shape[1]//NUM_ROBOTS, interval=20,
+        self.ani = FuncAnimation(self.fig, self.update, frames=self.data.shape[1]//NUM_ROBOTS, interval=10,
                     init_func=self.init_func, blit=False, repeat=True)
         plt.show()
         plt.grid()
@@ -320,6 +346,7 @@ class Draw():
         for j in range(NUM_ROBOTS):
             x, y, angle = self.data[:, NUM_ROBOTS*i + j]
             self.robs[j].center = (x,y)
+
         self.fig.suptitle('Frame: {0}'.format(i))
         return self.robs.values()
 
@@ -401,6 +428,7 @@ def main():
     startedloop=time.time()
     count = 0
     while len([t for t in threads if t.is_alive()]) > 0:
+    # while time.time()-startedloop <= run_dur:
         # print("YO")
         lst = np.zeros((3,NUM_ROBOTS))
         for i in range(NUM_ROBOTS):
@@ -433,10 +461,11 @@ def main():
         # print(p_circ.shape)
         full_data = np.hstack((full_data, lst))
         time.sleep(0.05)
-        if count % 100 == 0:
-            print(time.time()-startedloop)
+        # if count % 100 == 0:
+        # print(time.time()-startedloop)
         count+=1
-
+    # print("YEAAA")
+    # print(len([t for t in threads if t.is_alive()]))
     for thread in threads:
         thread.join()
     print(full_data)
