@@ -4,6 +4,9 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 import time
 import argparse
+from shapely.geometry import Polygon
+from shapely.geometry.point import Point
+from shapely.geometry import LineString
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--num_robots', '-nr', type=int, default=3)
@@ -13,12 +16,15 @@ args = parser.parse_args()
 GRID_SIZE = 100
 GRID_LENGTH = 20#l (not exactly l but corresponds to l)
 ROBOT_RAD = GRID_LENGTH/(3*np.sqrt(2))#r
-COM_RANGE = GRID_LENGTH*2.5#R
+SAFETY_BUFFER = ROBOT_RAD*0.1
+COM_RANGE = GRID_LENGTH*2.5*2#R
 # ROBOT_RAD = GRID_LENGTH*2#r (here it is slightly different from r since plt scaling is weird)
 TRANSMIT_FREQ = 200#f_comm
 # SPEED = 0.1 #blocks/sec
 # LISTENING_TIME = 100/TRANSMIT_FREQ
 dt = 1/200000
+STEP_SIZE = 5
+
 if args.shape == 'n' or args.shape == 'u':
     NUM_ROBOTS = 2*(GRID_SIZE//GRID_LENGTH) + (GRID_SIZE//GRID_LENGTH)-2
 else:
@@ -26,10 +32,9 @@ else:
 
 Q = []
 robots = []
-# msg_locks = {}
 ack_locks = {}
 request_locks = {}
-run_dur = 100
+run_dur = 50
 
 def manhattan(a, b):
     return abs(a[0]-b[0]) + abs(a[1]-b[1])
@@ -37,49 +42,27 @@ def manhattan(a, b):
 def norm(a, b):
     return ((a[0]-b[0])**2 + (a[1]-b[1])**2)**0.5
 
-# class MsgBuff():
-#     def __init__(self):
-#         self.m = []
-#         self.tthresh = LISTENING_TIME
-#     def push(self, msg, lock):
-#         lock.acquire()
-#         self.m.append(msg)
-#         while self.m[-1][0] - self.m[0][0] > self.tthresh:
-#             self.m.pop(0)
-#         lock.release()
-#     def get(self, request_time, lock):
-#         lock.acquire()
-#         for i in range(len(self.m)):
-#             if request_time - self.m[i][0] <= self.tthresh:
-#                 ret = self.m[i:]
-#                 lock.release()
-#                 return ret
-#         if len(self.m) > 0:
-#             ret = [self.m[-1]]
-#             lock.release()
-#             return ret
-#         else:
-#             lock.release()
-#             return []
+def check_col(a, b1, b2):
+    roba = Point(a[0], a[1]).buffer(ROBOT_RAD + SAFETY_BUFFER)
+    robb = LineString([(b1[0], b1[1]), (b2[0], b2[1])]).buffer(ROBOT_RAD + SAFETY_BUFFER)
+    return roba.intersects(robb)
+    # print(p1.intersects(p2))
+
 
 class Robot():
     def __init__(self, x, y, id):
-        self.x = GRID_LENGTH*(x + 0.5)
-        self.y = GRID_LENGTH*(y + 0.5)
+        self.x = x#GRID_LENGTH*(x + 0.5)
+        self.y = y#GRID_LENGTH*(y + 0.5)
         self.angle = np.random.randint(4)*90
         self.p = [self.x, self.y]
         self.wp = self.p
         self.nextwp = self.wp
         self.id = id
         self.hop = np.inf
-        self.delta_t = 180/TRANSMIT_FREQ
+        self.delta_t = 100/TRANSMIT_FREQ
         self.qu = Q[np.random.randint(len(Q))]
-        # if self.id == 2:
-        #     self.T = Q[1]
-        # else:
-        #     self.T = Q[0]
         self.T = Q[np.random.randint(len(Q))]
-        print(self.id, [int(self.p[0]/GRID_LENGTH - 0.5), int(self.p[1]/GRID_LENGTH - 0.5)], [int(self.T[0]/GRID_LENGTH - 0.5), int(self.T[1]/GRID_LENGTH - 0.5)])
+        print(self.id, [x, y], [self.T[0], self.T[1]])
         self.last_check = time.time()
         self.msg = [time.time(), self.p, self.wp, self.nextwp, self.T, self.qu, self.hop]
         self.ack = None
@@ -87,7 +70,6 @@ class Robot():
 
     def main_rob(self):
         time.sleep(1)
-        # t1 = threading.Thread(target=self.broadcast, args=(msg_locks[self.id],))
         t1 = threading.Thread(target=self.broadcast)
         t2 = threading.Thread(target=self.goal_manager)
         self.start = time.time()
@@ -95,92 +77,104 @@ class Robot():
         t2.start()
 
         while time.time()-self.start <= run_dur:
-            # print(self.p, self.x, self.y)
-            print(self.hop)
-            surroundings = [[self.wp[0], self.wp[1] + GRID_LENGTH], [self.wp[0] - GRID_LENGTH, self.wp[1]],
-                [self.wp[0], self.wp[1] - GRID_LENGTH], [self.wp[0] + GRID_LENGTH, self.wp[1]]]
-            idxs = [0,1,2,3]
+            # if self.id ==1:
+            #     print('------------------------------')
+            #     print(self.id, self.wp, self.T)
+            # surroundings = [[self.wp[0], self.wp[1] + GRID_LENGTH], [self.wp[0] - GRID_LENGTH, self.wp[1]],
+            #     [self.wp[0], self.wp[1] - GRID_LENGTH], [self.wp[0] + GRID_LENGTH, self.wp[1]]]
+
+            thetas = np.arange(0,2*np.pi,np.pi/16).tolist()
+
+            # idxs = [0,1,2,3]
 
             #boundary checks
-            for i in range(len(surroundings)-1, -1, -1):
-                x, y = surroundings[i][0], surroundings[i][1]
-                if x < 0 or y < 0 or x > GRID_SIZE or y > GRID_SIZE:
-                    surroundings.pop(i)
-                    idxs.pop(i)
+            for i in range(len(thetas)-1, -1, -1):
+                x, y = self.x + STEP_SIZE*np.cos(thetas[i]), self.y + STEP_SIZE*np.sin(thetas[i])
+                # x, y = surroundings[i][0], surroundings[i][1]
+                if x < ROBOT_RAD or y < ROBOT_RAD or x > GRID_SIZE-ROBOT_RAD or y > GRID_SIZE-ROBOT_RAD:
+                    thetas.pop(i)
+                    # idxs.pop(i)
 
             wait_flag = 0
-            next_angle = self.angle
-            for i in range(len(surroundings)):
-                if manhattan(self.T, surroundings[i]) < manhattan(self.T, self.wp):
-                    # msg_locks[self.id].acquire()
-                    self.nextwp = surroundings[i]
-                    # msg_locks[self.id].release()
-                    next_angle = idxs[i]*90
+            # next_angle = self.angle
+            bestnorm = norm(self.T, self.wp)
+            for i in range(len(thetas)):
+                next_point = [self.x + STEP_SIZE*np.cos(thetas[i]), self.y + STEP_SIZE*np.sin(thetas[i])]
+                if norm(self.T, next_point) < bestnorm:#norm(self.T, self.wp):
+
+                    # print(next_point)
+                    self.nextwp = next_point
+                    bestnorm = norm(self.T, next_point)
+                    # if self.id == 1:
+                    #     print('YEAAA')
+                    #     print(self.wp, self.nextwp, self.T)
+                    # next_angle = idxs[i]*90
+                    # break
+                elif norm(self.T, self.wp) <= STEP_SIZE:
+                    self.nextwp = self.T
                     break
-            # print(self.p, self.wp, self.nextwp)
+            # if self.id == 0:
+            #     print(self.nextwp)
+
             rcvmsgs = []
             started_listening = time.time()
             while time.time()-started_listening <= self.delta_t:
                 rcvmsgs = []
-                # request_time = time.time()
                 for r in robots:
                     if r.id != self.id and norm(r.p, self.p) <= COM_RANGE:
-                        # msg_locks[r.id].acquire()
                         rcvmsgs.append(r.msg)
-                        # msg_locks[r.id].release()
-            # print(self.id, len(rcvmsgs))
             if len(rcvmsgs) > 0:
                 msg_min = min(rcvmsgs, key=lambda x: x[-1])
-                # msg_locks[self.id].acquire()
                 self.hop = 1 + msg_min[-1]
                 self.qu = msg_min[-2]
-                # msg_locks[self.id].release()
-                for i in surroundings:
-                    if i in Q:
+                for i in thetas:
+                    poss_state = [self.x + STEP_SIZE*np.cos(i), self.y + STEP_SIZE*np.sin(i)]
+                    # if poss_state in Q:
+                    state = None
+                    for j in Q:
+                        if norm(poss_state, j) <= ROBOT_RAD:
+                            state = j
+                            break
+                    if state is not None:
                         occupied = 0
                         for msg in rcvmsgs:
-                            if msg[-3] == i:
+                            if norm(msg[-3], state) <= ROBOT_RAD:
+                            # if msg[-3] == i:
                                 occupied = 1
                                 break
-                        if occupied == 0:
-                            # msg_locks[self.id].acquire()
-                            self.qu = i
+                        if occupied == 0:   #fix this later
+                            self.qu = state
                             self.hop = 0
-                            # msg_locks[self.id].release()
                             break
-                # if self.id == 0:
-                #     print(msg_min)
-                #     print(self.nextwp)
-                # print(self.x, self.y)
                 for msg in rcvmsgs:
-                    if msg[2][0] == self.nextwp[0] and msg[2][1] == self.nextwp[1]:
-                        # if self.id == 0:
-                            # print(msg[2])
+                    collision = check_col(msg[2], self.wp, self.nextwp)
+                    same_next_collision = check_col(msg[3], self.wp, self.nextwp)
+                    # if msg[2][0] == self.nextwp[0] and msg[2][1] == self.nextwp[1]:
+                    if collision:
+                        print("FIRST CASE")
+                        print(self.id, self.wp, self.nextwp, self.T)
                         wait_flag = 1
-                    if msg[3][0] == self.nextwp[0] and msg[3][1] == self.nextwp[1]:
+                    # if msg[3][0] == self.nextwp[0] and msg[3][1] == self.nextwp[1]:
+                    if same_next_collision:
                         ix, iy = msg[1]
                         if ix > self.x or (ix == self.x and iy > self.y):
+                            print("SECOND CASE")
+                            print(self.id, self.wp, self.nextwp, self.T)
                             wait_flag = 1
-            # if self.id == 2:
-            # print("MAIN", self.id)
-                # print(self.T)
-                # print(self.p)
-            # if len()
-            # print(self.id, self.wp, rcvmsgs[0])
+            # if self.id == 1 and self.wp != self.nextwp and wait_flag == 1:
+            #     print(self.id, self.wp, self.nextwp)
             if wait_flag == 0 and time.time() - self.last_check > self.delta_t:
-                # msg_locks[self.id].acquire()
+                # if self.id == 0:
+                #     print("YEA")
+                #     if self.wp == self.nextwp:
+                #         print('staying still')
+                #     else:
+                #         print("moving")
                 self.wp = self.nextwp
                 start_moving = time.time()
                 ox, oy = self.x, self.y
-                oang = self.angle
-                dir = 1 if next_angle - self.angle <= 180 else -1
-                # print('yea')
-                # print(self.angle, next_angle, self.p, self.id)
-                # self.angle = next_angle
-
-                # while abs(self.angle%360 - next_angle) >= 0.1:
-                #     self.angle += dt*dir*30
-                # self.angle = next_angle
+                # oang = self.angle
+                # dir = 1 if next_angle - self.angle <= 180 else -1
 
                 while norm(self.p, self.wp) >= 0.1:
                     self.x += dt*(self.wp[0] - ox)
@@ -189,20 +183,14 @@ class Robot():
                 self.p = self.wp
                 self.x, self.y = self.p
                 self.last_check = time.time()
-                # msg_locks[self.id].release()
 
         t1.join()
         t2.join()
         return False
 
-    # def broadcast(self, lock):
     def broadcast(self):
         while time.time()-self.start <= run_dur:
-            # print("BROADCAST", self.id)
-            # lock.acquire()
             self.msg = [time.time(), self.p, self.wp, self.nextwp, self.T, self.qu, self.hop]
-            # lock.release()
-            # print(self.id, [int(self.wp[0]/GRID_LENGTH - 0.5), int(self.wp[1]/GRID_LENGTH - 0.5)], [int(self.T[0]/GRID_LENGTH - 0.5), int(self.T[1]/GRID_LENGTH - 0.5)], self.requests)
             time.sleep(1/TRANSMIT_FREQ)
 
     def goal_manager(self):
@@ -248,13 +236,9 @@ class Robot():
 
         while time.time()-self.start <= run_dur:
             s = time.time()
-            # print("GOAL MANAGER", self.id)
             for r in robots:
-                # if self.id == 2:
-                #     print(r.id)
                 if norm(r.p, self.p) <= COM_RANGE:
 
-                    # msg_locks[r.id].acquire()
 
                     rp = r.msg[1].copy()
                     rwp = r.msg[2].copy()
@@ -263,9 +247,7 @@ class Robot():
                     rqu = r.msg[5].copy()
                     rhop = r.msg[6]
                     r_msg = [r.msg[0], rp, rwp, rnextwp, rT, rqu, rhop]
-                    # msg_locks[r.id].release()
 
-                    # msg_locks[self.id].acquire()
                     p = self.msg[1].copy()
                     wp = self.msg[2].copy()
                     nextwp = self.msg[3].copy()
@@ -273,49 +255,31 @@ class Robot():
                     qu = self.msg[5].copy()
                     hop = self.msg[6]
 
-                    # msg_locks[self.id].release()
-
                     if r_msg[4] == T:  #if neighbor has same goal
                         rx, ry = r_msg[1]
                         x, y = p
                         if rx > x or (rx == x and ry > y):   #if neighbor is lexically larger position
-                            # print('acquiring', self.id)
-                            # msg_locks[self.id].acquire()
-                            # print('acquired', self.id)
                             if np.random.random() > 0.1:
-                                # msg_locks[self.id].acquire()
                                 self.T = qu
-                                # msg_locks[self.id].release()
                                 self.last_check = time.time()
                             else:
-                                # msg_locks[self.id].acquire()
                                 self.T = Q[np.random.randint(len(Q))]
-                                # msg_locks[self.id].release()
                                 self.last_check = time.time()
-                            # msg_locks[self.id].release()
 
-                    if manhattan(r_msg[4], wp) + manhattan(r_msg[2], T) < manhattan(T, wp) + manhattan(r_msg[4], r_msg[2]):
+                    if norm(r_msg[4], wp) + norm(r_msg[2], T) < norm(T, wp) + norm(r_msg[4], r_msg[2]):
                         successful, new_goal = two_way_handshake(r_msg, p, T)
 
                         if successful:
-                            # msg_locks[self.id].acquire()
                             self.T = new_goal
-                            # msg_locks[self.id].release()
                             self.last_check = time.time()
-                    if manhattan(r_msg[4], wp) + manhattan(r_msg[2], T) == manhattan(T, wp) + manhattan(r_msg[4], r_msg[2]):
+                    if norm(r_msg[4], wp) + norm(r_msg[2], T) == norm(T, wp) + norm(r_msg[4], r_msg[2]):
                         if np.random.random() < 0.5:
                             successful, new_goal = two_way_handshake(r_msg, p, T)
                             if successful:
-                                # msg_locks[self.id].acquire()
                                 self.T = new_goal
-                                # msg_locks[self.id].release()
                                 self.last_check = time.time()
-                    # msg_locks[r.id].release()
-            # if self.id == 2:
-            #     print(time.time()-s)
 
 class Draw():
-    # def __init__(self, robots, fig):
     def __init__(self, data, fig):
         self.fig = fig
         self.ax = self.fig.add_subplot(1, 1, 1)
@@ -334,11 +298,7 @@ class Draw():
         self.robs = {}
         colors = ['blue', 'red', 'green', 'black', 'brown']
         for i in range(NUM_ROBOTS):
-            # self.plot[i], = plt.plot([], [], marker=(3, 0, self.data[2,i]), markersize=ROBOT_RAD, c=colors[i%len(colors)])
             self.robs[i] = plt.Circle((), radius=ROBOT_RAD, color=colors[i%len(colors)])
-
-        # self.ani = FuncAnimation(self.fig, self.update, frames=600, fargs=(robots), interval=10,
-        #             init_func=self.init_func, blit=True)
 
         self.ani = FuncAnimation(self.fig, self.update, frames=self.data.shape[1]//NUM_ROBOTS, interval=20,
                     init_func=self.init_func, blit=False, repeat=True)
@@ -348,25 +308,18 @@ class Draw():
     def init_func(self):
         self.ax.set_xlim(0, GRID_SIZE)
         self.ax.set_ylim(0, GRID_SIZE)
-        # for r in list(self.plot.keys()):
-        #     self.plot[r].set_data([], [])
 
         for i in range(NUM_ROBOTS):
             self.robs[i].center = (self.data[0,i], self.data[1,i])
             self.ax.add_patch(self.robs[i])
         return self.robs.values()
 
-    # def update(self, i, *robots):
-    #     for r in robots:
-    #         x, y = r.p
-    #         self.plot[r].set_data(x, y)
-    #         self.plot[r].set_marker((3, 0, r.angle))
-    #     return self.plot.values()
     def update(self, i):
+        final_points = np.array(Q)
+        plt.scatter(final_points[:,0], final_points[:,1], c='red')
         for j in range(NUM_ROBOTS):
             x, y, angle = self.data[:, NUM_ROBOTS*i + j]
             self.robs[j].center = (x,y)
-            # self.plot[j].set_marker((3, 0, angle))
         self.fig.suptitle('Frame: {0}'.format(i))
         return self.robs.values()
 
@@ -375,37 +328,54 @@ def main():
     global robots, Q
     fig = plt.figure()
     #converting from index to coordinates
-    # print(NUM_ROBOTS)
     for i in range(NUM_ROBOTS):
-        target = [np.random.randint(GRID_SIZE//GRID_LENGTH), np.random.randint(GRID_SIZE//GRID_LENGTH)]
-        while target in Q:
-            target = [np.random.randint(GRID_SIZE//GRID_LENGTH), np.random.randint(GRID_SIZE//GRID_LENGTH)]
+        collides = True
+        while collides:
+            collides = False
+            target = [(GRID_SIZE - 2*ROBOT_RAD)*np.random.random() + ROBOT_RAD, (GRID_SIZE - 2*ROBOT_RAD)*np.random.random() + ROBOT_RAD]
+            # target = [np.random.randint(GRID_SIZE//GRID_LENGTH), np.random.randint(GRID_SIZE//GRID_LENGTH)]
+            p1 = Point(target[0], target[1]).buffer(ROBOT_RAD + SAFETY_BUFFER)
+            for j in range(len(Q)):
+                p2 = Point(Q[j][0], Q[j][1]).buffer(ROBOT_RAD + SAFETY_BUFFER)
+                if p1.intersects(p2):
+                    collides = True
+                    break
+
         Q.append(target)
-    if args.shape == 'n':
-        Q = []
-        Q.extend([[0, i] for i in range(int(GRID_SIZE//GRID_LENGTH))])
-        Q.extend([[i+1, GRID_SIZE//GRID_LENGTH - 2 - i] for i in range(int(GRID_SIZE//GRID_LENGTH - 2))])
-        Q.extend([[GRID_SIZE//GRID_LENGTH - 1, i] for i in range(int(GRID_SIZE//GRID_LENGTH))])
-    elif args.shape == 'u':
-        Q = []
-        Q.extend([[0, i] for i in range(int(GRID_SIZE//GRID_LENGTH))])
-        Q.extend([[i+1, 0] for i in range(int(GRID_SIZE//GRID_LENGTH - 2))])
-        Q.extend([[GRID_SIZE//GRID_LENGTH - 1, i] for i in range(int(GRID_SIZE//GRID_LENGTH))])
+    # if args.shape == 'n':
+    #     Q = []
+    #     Q.extend([[0, i] for i in range(int(GRID_SIZE//GRID_LENGTH))])
+    #     Q.extend([[i+1, GRID_SIZE//GRID_LENGTH - 2 - i] for i in range(int(GRID_SIZE//GRID_LENGTH - 2))])
+    #     Q.extend([[GRID_SIZE//GRID_LENGTH - 1, i] for i in range(int(GRID_SIZE//GRID_LENGTH))])
+    # elif args.shape == 'u':
+    #     Q = []
+    #     Q.extend([[0, i] for i in range(int(GRID_SIZE//GRID_LENGTH))])
+    #     Q.extend([[i+1, 0] for i in range(int(GRID_SIZE//GRID_LENGTH - 2))])
+    #     Q.extend([[GRID_SIZE//GRID_LENGTH - 1, i] for i in range(int(GRID_SIZE//GRID_LENGTH))])
+
     # Q.append([0,3])
     # Q.append([10,1])
     # Q.append([3,5])
     print(Q)
-    for i in range(len(Q)):
-        for j in range(len(Q[0])):
-            Q[i][j] = GRID_LENGTH*(Q[i][j]+0.5)
+    # for i in range(len(Q)):
+    #     for j in range(len(Q[0])):
+    #         Q[i][j] = GRID_LENGTH*(Q[i][j]+0.5)
 
     rob_init_pos = []
     robots = []
     id = 0
     for i in range(NUM_ROBOTS):
-        init_pos = [np.random.randint(GRID_SIZE//GRID_LENGTH), np.random.randint(GRID_SIZE//GRID_LENGTH)]
-        while init_pos in rob_init_pos:
-            init_pos = [np.random.randint(GRID_SIZE//GRID_LENGTH), np.random.randint(GRID_SIZE//GRID_LENGTH)]
+        collides = True
+        while collides:
+            collides = False
+            init_pos = [(GRID_SIZE - 2*ROBOT_RAD)*np.random.random() + ROBOT_RAD, (GRID_SIZE - 2*ROBOT_RAD)*np.random.random() + ROBOT_RAD]
+            # target = [np.random.randint(GRID_SIZE//GRID_LENGTH), np.random.randint(GRID_SIZE//GRID_LENGTH)]
+            p1 = Point(init_pos[0], init_pos[1]).buffer(ROBOT_RAD + SAFETY_BUFFER)
+            for j in range(len(rob_init_pos)):
+                p2 = Point(rob_init_pos[j][0], rob_init_pos[j][1]).buffer(ROBOT_RAD + SAFETY_BUFFER)
+                if p1.intersects(p2):
+                    collides = True
+                    break
         robots.append(Robot(init_pos[0], init_pos[1], id))
         rob_init_pos.append(init_pos)
         id+=1
@@ -415,7 +385,6 @@ def main():
     # r1 = Robot(10, 80, 1)
     # robots = [r, r1, r2]
     for r in robots:
-        # msg_locks[r.id] = threading.Lock()
         ack_locks[r.id] = threading.Lock()
         request_locks[r.id] = threading.Lock()
     threads = [threading.Thread(target=i.main_rob) for i in robots]
@@ -444,9 +413,11 @@ def main():
         # for i in range(NUM_ROBOTS):
         #     akl = (lst[0,i], lst[1,i])
         #     seen.append(akl)
-
-        # for i in range(NUM_ROBOTS):
-        #     print(robots[i].id, robots[i].msg[1], robots[i].msg[2], robots[i].msg[3])
+        # if count %50 == 0:
+        #     for i in range(NUM_ROBOTS):
+        #         # print(robots[i].id, robots[i].msg[1], robots[i].msg[2], robots[i].msg[3])
+        #         print(robots[i].id, robots[i].msg[1], robots[i].msg[2], robots[i].T)
+        #     print("---------------------------------------------------------------------------")
         # if len(set(seen)) != len(seen):
         #     print("OHHHH NOOOOO")
             # print('------------------------------------------------------------------------')
