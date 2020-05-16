@@ -17,7 +17,7 @@ GRID_SIZE = 100
 GRID_LENGTH = 25#l (not exactly l but corresponds to l)
 ROBOT_RAD = GRID_LENGTH/(3*np.sqrt(2))#r
 SAFETY_BUFFER = ROBOT_RAD*0.1
-COM_RANGE = GRID_LENGTH*2.5*2#R
+COM_RANGE = GRID_LENGTH*2.5#R
 # ROBOT_RAD = GRID_LENGTH*2#r (here it is slightly different from r since plt scaling is weird)
 TRANSMIT_FREQ = 200#f_comm
 # SPEED = 0.1 #blocks/sec
@@ -33,9 +33,10 @@ else:
 
 Q = []
 robots = []
+msg_locks = {}
 ack_locks = {}
 request_locks = {}
-run_dur = 50
+run_dur = 150
 
 def manhattan(a, b):
     return abs(a[0]-b[0]) + abs(a[1]-b[1])
@@ -73,9 +74,10 @@ class Robot():
         self.msg = [time.time(), self.p, self.wp, self.nextwp, self.T, self.qu, self.hop]
         self.ack = None
         self.requests = []
+        self.done = False
+        self.total_dist_traveled = 0
 
     def main_rob(self):
-        global done
         time.sleep(1)
         t1 = threading.Thread(target=self.broadcast)
         t2 = threading.Thread(target=self.goal_manager)
@@ -86,7 +88,12 @@ class Robot():
         # while time.time()-self.start <= run_dur:
         while not done:
             # self.hop < NUM_ROBOTS or self.hop == np.inf
-            print(self.hop)
+            # print(self.id, norm(self.p, self.T), self.done, done)
+            if norm(self.p, self.T) <= 5:
+                self.done = True
+            else:
+                self.done = False
+            # print(self.hop)
             # print(time.time()-self.start)
             # a = time.time()
             # if self.id ==1:
@@ -134,7 +141,9 @@ class Robot():
                 rcvmsgs = []
                 for r in robots:
                     if r.id != self.id and norm(r.p, self.p) <= COM_RANGE:
+                        # msg_locks[r.id].acquire()
                         rcvmsgs.append(r.msg)
+                        # msg_locks[r.id].release()
             if len(rcvmsgs) > 0:
                 msg_min = min(rcvmsgs, key=lambda x: x[-1])
                 self.hop = 1 + msg_min[-1]
@@ -202,12 +211,13 @@ class Robot():
                     # print("yoooooo")
                     self.x += dt*(self.wp[0] - ox)
                     self.y += dt*(self.wp[1] - oy)
+                    self.total_dist_traveled += dt*abs(self.wp[0] - ox) + dt*abs(self.wp[1] - oy)
                     self.p = [self.x, self.y]
                 self.p = self.wp
                 self.x, self.y = self.p
                 self.last_check = time.time()
 
-        print('out here')
+        # print('out here')
         t1.join()
         t2.join()
         return False
@@ -265,6 +275,7 @@ class Robot():
             for r in robots:
                 if norm(r.p, self.p) <= COM_RANGE:
 
+                    # msg_locks[r.id].acquire()
 
                     rp = r.msg[1].copy()
                     rwp = r.msg[2].copy()
@@ -273,36 +284,47 @@ class Robot():
                     rqu = r.msg[5].copy()
                     rhop = r.msg[6]
                     r_msg = [r.msg[0], rp, rwp, rnextwp, rT, rqu, rhop]
+                    # msg_locks[r.id].release()
 
+                    # msg_locks[self.id].acquire()
                     p = self.msg[1].copy()
                     wp = self.msg[2].copy()
                     nextwp = self.msg[3].copy()
                     T = self.msg[4].copy()
                     qu = self.msg[5].copy()
                     hop = self.msg[6]
+                    # msg_locks[self.id].release()
 
                     if r_msg[4] == T:  #if neighbor has same goal
                         rx, ry = r_msg[1]
                         x, y = p
                         if rx > x or (rx == x and ry > y):   #if neighbor is lexically larger position
                             if np.random.random() > 0.1:
+                                # msg_locks[self.id].acquire()
                                 self.T = qu
+                                # msg_locks[self.id].release()
                                 self.last_check = time.time()
                             else:
+                                # msg_locks[self.id].acquire()
                                 self.T = Q[np.random.randint(len(Q))]
+                                # msg_locks[self.id].release()
                                 self.last_check = time.time()
 
                     if norm(r_msg[4], wp) + norm(r_msg[2], T) < norm(T, wp) + norm(r_msg[4], r_msg[2]):
                         successful, new_goal = two_way_handshake(r_msg, p, T)
 
                         if successful:
+                            # msg_locks[self.id].acquire()
                             self.T = new_goal
+                            # msg_locks[self.id].release()
                             self.last_check = time.time()
                     if norm(r_msg[4], wp) + norm(r_msg[2], T) == norm(T, wp) + norm(r_msg[4], r_msg[2]):
                         if np.random.random() < 0.5:
                             successful, new_goal = two_way_handshake(r_msg, p, T)
                             if successful:
+                                # msg_locks[self.id].acquire()
                                 self.T = new_goal
+                                # msg_locks[self.id].release()
                                 self.last_check = time.time()
 
 class Draw():
@@ -327,22 +349,25 @@ class Draw():
             self.robs[i] = plt.Circle((), radius=ROBOT_RAD, color=colors[i%len(colors)], fill=False)
 
         self.ani = FuncAnimation(self.fig, self.update, frames=self.data.shape[1]//NUM_ROBOTS, interval=10,
-                    init_func=self.init_func, blit=False, repeat=True)
+                    init_func=self.init_func, blit=True, repeat=True)
         plt.show()
         plt.grid()
 
     def init_func(self):
+        self.ax.clear()
         self.ax.set_xlim(0, GRID_SIZE)
         self.ax.set_ylim(0, GRID_SIZE)
-
         for i in range(NUM_ROBOTS):
             self.robs[i].center = (self.data[0,i], self.data[1,i])
             self.ax.add_patch(self.robs[i])
+        final_points = np.array(Q)
+        for i in range(final_points.shape[0]):
+            self.ax.add_patch(plt.Circle((final_points[i,0], final_points[i,1]), radius=1.5, color='red'))
         return self.robs.values()
 
     def update(self, i):
-        final_points = np.array(Q)
-        plt.scatter(final_points[:,0], final_points[:,1], c='red')
+        # final_points = np.array(Q)
+        # plt.scatter(final_points[:,0], final_points[:,1], c='red')
         for j in range(NUM_ROBOTS):
             x, y, angle = self.data[:, NUM_ROBOTS*i + j]
             self.robs[j].center = (x,y)
@@ -352,7 +377,7 @@ class Draw():
 
 
 def main():
-    global robots, Q
+    global robots, Q, done
     fig = plt.figure()
     #converting from index to coordinates
     for i in range(NUM_ROBOTS):
@@ -369,11 +394,14 @@ def main():
                     break
 
         Q.append(target)
-    # if args.shape == 'n':
-    #     Q = []
-    #     Q.extend([[0, i] for i in range(int(GRID_SIZE//GRID_LENGTH))])
-    #     Q.extend([[i+1, GRID_SIZE//GRID_LENGTH - 2 - i] for i in range(int(GRID_SIZE//GRID_LENGTH - 2))])
-    #     Q.extend([[GRID_SIZE//GRID_LENGTH - 1, i] for i in range(int(GRID_SIZE//GRID_LENGTH))])
+    if args.shape == 'n':
+        Q = []
+        Q.extend([[0, i] for i in range(int(GRID_SIZE//GRID_LENGTH))])
+        Q.extend([[i+1, GRID_SIZE//GRID_LENGTH - 2 - i] for i in range(int(GRID_SIZE//GRID_LENGTH - 2))])
+        Q.extend([[GRID_SIZE//GRID_LENGTH - 1, i] for i in range(int(GRID_SIZE//GRID_LENGTH))])
+        for i in range(len(Q)):
+            for j in range(len(Q[0])):
+                Q[i][j] = GRID_LENGTH*(Q[i][j]+0.5)
     # elif args.shape == 'u':
     #     Q = []
     #     Q.extend([[0, i] for i in range(int(GRID_SIZE//GRID_LENGTH))])
@@ -412,6 +440,7 @@ def main():
     # r1 = Robot(10, 80, 1)
     # robots = [r, r1, r2]
     for r in robots:
+        msg_locks[r.id] = threading.Lock()
         ack_locks[r.id] = threading.Lock()
         request_locks[r.id] = threading.Lock()
     threads = [threading.Thread(target=i.main_rob) for i in robots]
@@ -428,14 +457,22 @@ def main():
     startedloop=time.time()
     count = 0
     while len([t for t in threads if t.is_alive()]) > 0:
-    # while time.time()-startedloop <= run_dur:
         # print("YO")
+        change_done = True
         lst = np.zeros((3,NUM_ROBOTS))
         for i in range(NUM_ROBOTS):
             lst[0,i]=robots[i].msg[1][0]
             lst[1,i]=robots[i].msg[1][1]
             lst[2,i]=robots[i].angle
-
+            if robots[i].done != True:
+                # print(i)
+                change_done = False
+                count = 0
+        # if change_done and count > 20 or time.time()-startedloop > run_dur:
+        # print('yoo')
+        if change_done or time.time()-startedloop > run_dur:
+            # print('yEA')
+            done = True
         # akl = [lst[0,i], lst[1,i], robots[i].id]
         # seen = []
         # for i in range(NUM_ROBOTS):
@@ -462,13 +499,44 @@ def main():
         full_data = np.hstack((full_data, lst))
         time.sleep(0.05)
         # if count % 100 == 0:
-        # print(time.time()-startedloop)
+        print(time.time()-startedloop)
         count+=1
     # print("YEAAA")
     # print(len([t for t in threads if t.is_alive()]))
+
+    print('Time Taken: {0}'.format(time.time()-startedloop))
+    tot_dist = 0
+    for rob in robots:
+        tot_dist += rob.total_dist_traveled
+    print('Total Distance Traveled: {0}'.format(tot_dist))
+
+    taken = []
+    starting_dist = 0
+    for pos in rob_init_pos:
+        lst = sorted(Q, key=lambda x: norm(x, pos))
+        for i in range(len(lst)):
+            if lst[i] not in taken:
+                taken.append(lst[i])
+                starting_dist += norm(lst[i], pos)
+                break
+    print("Initial Distance: {0}".format(starting_dist))
+
+
+    taken = []
+    dist_to_convergence = 0
+    for rob in robots:
+        lst = sorted(Q, key=lambda x: norm(x, rob.p))
+        for i in range(len(lst)):
+            if lst[i] not in taken:
+                taken.append(lst[i])
+                dist_to_convergence += norm(lst[i], rob.p)
+                break
+    print("Distance to Convergence: {0}".format(dist_to_convergence))
+    print('Percent Completed: {0}'.format((1-(dist_to_convergence/starting_dist))*100))
+
     for thread in threads:
         thread.join()
-    print(full_data)
+    # print(full_data)
     d = Draw(full_data, fig)
 
 
